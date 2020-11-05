@@ -151,7 +151,7 @@ def main():
     if sys.argv and len(sys.argv)==2:
         #ApplyRaft(sys.argv[1])
         #ApplySobel(sys.argv[1])
-        ApplyMotionSegmentation(sys.argv[1],True, 24)
+        ApplyMotionSegmentation(sys.argv[1],True, 8)
     else:
         print ("please enter filename")
     
