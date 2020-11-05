@@ -1,0 +1,7 @@
+Pillow
+moviepy
+numpy
+matplotlib
+tensorboard
+scipy
+opencv

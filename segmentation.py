@@ -7,8 +7,6 @@ from torch.nn import Unfold
 from torchmotion import rollFill
 import gc
 
-from concurrent.futures import ThreadPoolExecutor
-
 
 
 import pdb
@@ -261,7 +259,7 @@ def flood_pixels(mins, maxs,datasource, flexibility,base_increment=2, accelerati
    
     #actually an int, not a tensor
     flood_level=0
-    dimensional_cost=[2,2,1]
+    dimensional_cost=[1,1,0.8]
     #pool=ThreadPoolExecutor(4)
     from operator import or_
     from itertools import accumulate

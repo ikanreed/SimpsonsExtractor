@@ -141,7 +141,7 @@ def ApplyMotionSegmentation(filename, create_segment_video, target_fps=8):
         mask.write_videofile(f'motion-segment-mask-{outname}.mp4',fps=target_fps,codec="mpeg4")
         #resnet.write_videofile(f'motion-segment-resnet-{outname}.mp4',fps=8,codec="mpeg4")
     masked=sourcevideo.set_mask(mask)
-    composite=CompositeVideoClip([ColorClip((640,480),(0,0,0),duration=sourcevideo.duration), masked])
+    composite=CompositeVideoClip([ColorClip(sourcevideo.size,(0,0,0),duration=sourcevideo.duration), masked])
     composite.write_videofile(f'motion_segment-extracted-{outname}.mp4',fps=target_fps,codec="mpeg4")
     
     
@@ -151,7 +151,7 @@ def main():
     if sys.argv and len(sys.argv)==2:
         #ApplyRaft(sys.argv[1])
         #ApplySobel(sys.argv[1])
-        ApplyMotionSegmentation(sys.argv[1],True, 8)
+        ApplyMotionSegmentation(sys.argv[1],True, 24)
     else:
         print ("please enter filename")
     
