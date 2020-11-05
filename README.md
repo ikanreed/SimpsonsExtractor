@@ -5,6 +5,7 @@ Extracting characters from the simpsons with autorotoscoping
 
 ### requirements
 Graphics card that supports CUDA 10.2 or higher.  The process uses a lot of GPU ram.  I can only verify that it works reliably with 6 Gigs of GRAM
+
 I highly highly highly recomend you install conda.  Trying to install pytorch on windows with pip is awful
 
 --TODO--
