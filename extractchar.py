@@ -128,21 +128,21 @@ def ApplySobel(filename):
     output.write_videofile('sobel3d-'+filename,fps=8,codec="mpeg4")
     
     
-def ApplyMotionSegmentation(filename, create_segment_video):
+def ApplyMotionSegmentation(filename, create_segment_video, target_fps=8):
     sourcevideo=VideoFileClip(filename)
     #sourcevideo.duration=12*(1/8)
-    maker=SegmentedFlowMaker(sourcevideo,activityThreshold=0.5,target_segments=550*(int(8*sourcevideo.duration)**0.5))
+    maker=SegmentedFlowMaker(sourcevideo,activityThreshold=0.5,target_segments=550*(int(target_fps*sourcevideo.duration)**0.5), target_fps=target_fps)
     mask=VideoClip(maker.make_mask,duration=sourcevideo.duration,ismask=True)
     colors=VideoClip(maker.make_segment_rgb,duration=sourcevideo.duration)
     #resnet=VideoClip(maker.make_resnet,duration=sourcevideo.duration)
     outname=".".join(filename.split('.')[:-1])
     if create_segment_video:
-        colors.write_videofile(f'motion-segment-segments-{outname}.mp4',fps=8,codec="mpeg4")
-        mask.write_videofile(f'motion-segment-mask-{outname}.mp4',fps=8,codec="mpeg4")
+        colors.write_videofile(f'motion-segment-segments-{outname}.mp4',fps=target_fps,codec="mpeg4")
+        mask.write_videofile(f'motion-segment-mask-{outname}.mp4',fps=target_fps,codec="mpeg4")
         #resnet.write_videofile(f'motion-segment-resnet-{outname}.mp4',fps=8,codec="mpeg4")
     masked=sourcevideo.set_mask(mask)
     composite=CompositeVideoClip([ColorClip((640,480),(0,0,0),duration=sourcevideo.duration), masked])
-    composite.write_videofile(f'motion_segment-extracted-{outname}.mp4',fps=8,codec="mpeg4")
+    composite.write_videofile(f'motion_segment-extracted-{outname}.mp4',fps=target_fps,codec="mpeg4")
     
     
     
@@ -151,7 +151,7 @@ def main():
     if sys.argv and len(sys.argv)==2:
         #ApplyRaft(sys.argv[1])
         #ApplySobel(sys.argv[1])
-        ApplyMotionSegmentation(sys.argv[1],True)
+        ApplyMotionSegmentation(sys.argv[1],True, 24)
     else:
         print ("please enter filename")
     

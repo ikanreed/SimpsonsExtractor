@@ -53,10 +53,9 @@ def flood_one_frame(frame, flexibility=0, target_segments=75,color_borders=True)
     return results
     
 maximum_segments=10000
-def flood_video(video, flexibility=0, target_segments=120,color_borders=False, viewer=None):
+def flood_video(video, flexibility=0, target_segments=120,color_borders=False, viewer=None, target_fps=8):
     with torch.no_grad():
-        video.fps=8
-        frames=torch.stack([torch.from_numpy(frame).float().cuda() for frame in video.iter_frames()],dim=-2)
+        frames=torch.stack([torch.from_numpy(frame).float().cuda() for frame in video.iter_frames(fps=target_fps)],dim=-2)
         datasource=make_hsv(frames)[...,2] #switch from value to average of hsv
         #datasource=(sobel3d(datasource[...,2])+datasource[...,0])/2
         #sample_size=int((datasource.numel()//target_segments)**(1/3))+1

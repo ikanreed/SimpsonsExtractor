@@ -598,14 +598,15 @@ class CombinedDepthAnalysis:
         return result.detach().cpu().numpy()
         
 class SegmentedFlowMaker:
-    def __init__(self, wrapped,activityThreshold=.2, target_segments=500,large_segment_preference=1):
-        wrapped.fps=8
+    def __init__(self, wrapped,activityThreshold=.2, target_segments=500,large_segment_preference=1, target_fps=8):
+        wrapped.fps=target_fps
+        self.target_fps=target_fps
         self.wrapped=wrapped
         from segmentation import flood_video
         
         
         print('making segments')
-        self.colors,_,segments,_=flood_video(wrapped,flexibility=5, target_segments=target_segments,color_borders=False)
+        self.colors,_,segments,_=flood_video(wrapped,flexibility=5, target_segments=target_segments,color_borders=False, target_fps=target_fps)
         del _
         seg_ids=segments.unique().detach()
         print(f'number of segment ids: {seg_ids}')
@@ -618,8 +619,8 @@ class SegmentedFlowMaker:
         
         count=0
         print('Running raft')
-        self.raft=RaftMaskMaker(wrapped,8, backwards=True)
-        raft_data=torch.stack([(self.raft.make_frame_data(i/8)>1).any(-1) for i in range(int(8*wrapped.duration))],dim=2).cuda()
+        self.raft=RaftMaskMaker(wrapped,target_fps, backwards=True)
+        raft_data=torch.stack([(self.raft.make_frame_data(i/target_fps)>1).any(-1) for i in range(int(target_fps*wrapped.duration))],dim=2).cuda()
         frame_pixel_counts=raft_data.sum(0).sum(0)
         average_pixels=frame_pixel_counts.float().mean()
         for frame_index, count in enumerate(frame_pixel_counts):
@@ -645,9 +646,6 @@ class SegmentedFlowMaker:
                         
                         
         self.boolMask=raft_data.clone().bool()#be explicit that this a bool
-        #print('running resnet')
-        #self.resnetMattes=torch.stack([createMatteFrame(torchFrame(x),15) for x in wrapped.iter_frames(fps=8)], dim=2).cpu()
-        #print(self.resnetMattes.shape)
         
         seg_ids=seg_ids.cuda()
         segments=segments.cuda()
@@ -703,18 +701,18 @@ class SegmentedFlowMaker:
             
                 
     def make_segment_rgb(self, T):
-        result= self.colors[:,:,int(8*T)]
+        result= self.colors[:,:,int(self.target_fps*T)]
         #result[result==self.skipped_segments]//=4
         return result.cpu().numpy()
     def make_mask(self, T):
-        T=min(T, self.wrapped.duration-1/8)
-        mask_frame=self.boolMask[:,:,int(8*T)]
+        T=min(T, self.wrapped.duration-1/self.target_fps)
+        mask_frame=self.boolMask[:,:,int(self.target_fps*T)]
         result=mask_frame.new_full(mask_frame.shape,fill_value=0,dtype=torch.float)
         result[mask_frame]=1.0
         return result.detach().cpu().numpy()
     def make_resnet(self, T):
-        T=min(T, self.wrapped.duration-1/8)
-        frame=self.resnetMattes[:,:,int(8*T)]
+        T=min(T, self.wrapped.duration-1/self.target_fps)
+        frame=self.resnetMattes[:,:,int(self.target_fps*T)]
         result=frame.new_full(frame.shape+(3,),0,dtype=torch.uint8)
         result[frame]=255
         return result.cpu().numpy()
