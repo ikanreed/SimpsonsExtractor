@@ -14,11 +14,11 @@ Not tested on Linux
 1.  Install python 3.7 or higher
 2.  Install [pytorch](https://pytorch.org/get-started/locally/)  Cuda is mandatory.  If you're computer can't handle cuda, this script will take days to run, AND you'll have to change the source code to tell it to run on the CPU.
 3.  run pip install -r requirements.txt
-4.  Check out [RAFT](https://github.com/princeton-vl/RAFT) somewhere on your computer
-  1.  Open a command prompt and browse to the "core" subfolder of RAFT
-  2.  run "conda develop ."
-  3.  Per the instructions on RAFT's readme, download the pretrained models
-  4.  Whever you extracted raft-sintel.pth to, change the initModel(self) method of the RaftMaskMaker class in torchmotion.py.  (currently line 181)
+4.  Check out [RAFT](https://github.com/princeton-vl/RAFT) somewhere on your computer  
+  - Open a command prompt and browse to the "core" subfolder of RAFT
+  - run "conda develop ."
+  - Per the instructions on RAFT's readme, download the pretrained models
+  - Whever you extracted raft-sintel.pth to, change the initModel(self) method of the RaftMaskMaker class in torchmotion.py.  (currently line 181)
 5.  Go to wherever you checked this project out, and run "conda develop ."
 
 ## Usage
