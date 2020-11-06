@@ -5,6 +5,9 @@ import torchvision.transforms as T
 from PIL import Image
 import numpy as np
 from raft import RAFT
+import torch.nn.functional as F
+
+import pdb
 #from FindMattes import createMatteFrame
 
 FromFrameTransform=T.Compose([T.ToTensor()])
@@ -15,6 +18,8 @@ def torchFrame(frame):
     if torch.cuda.is_available():
         result=result.to('cuda')
     return result
+    
+   
     
 
 def CalculateDifferenceField(video):
@@ -39,6 +44,118 @@ def CalculateDifferenceField(video):
     
     return Image.fromarray(result)
     
+    
+class StabilizePanMaker:
+    def __init__(self, wrapped,max_shift_per_frame=5, fps=8):
+        self.wrapped=wrapped
+        self.fps=fps
+        raw_frames=[torchFrame(frame) for frame in self.wrapped.iter_frames(fps=fps)]
+        sobel_frames=[self.sobel_frame(x) for x in raw_frames]
+        shifts=[(0,0)]#add no shift for first frame
+        for index in range(1,len(raw_frames)):
+            tracked=[]
+            frame, previous=raw_frames[index],raw_frames[index-1]
+            minxy=self.BSP_Search(frame,previous,-max_shift_per_frame,max_shift_per_frame,0,0)
+            
+            
+            #for x in range(-max_shift_per_frame, max_shift_per_frame+1):
+
+                 
+            #    for y in range(-max_shift_per_frame, max_shift_per_frame+1):
+
+                    #difference=self.get_diff(frame, previous,x,y)
+                    #tracked.append((difference,x,y))
+                    #if difference<mindiff:
+                    #    minxy=(x,y)
+                    #    mindiff=difference
+            #pdb.set_trace()
+            shifts.append(minxy)
+        self.totalshifts=[]
+        curx,cury=0,0
+        for xadd,yadd in shifts:
+            curx+=xadd
+            cury+=yadd
+            self.totalshifts.append( (curx,cury) )
+        print(shifts)
+        print(self.totalshifts)
+        xshifts=[x for x,y in self.totalshifts]
+        xmax=max(xshifts)
+        xmin=min(xshifts)
+        yshifts=[y for x,y in self.totalshifts]
+        ymax=max(yshifts)
+        ymin=min(yshifts)
+        padding=[0,0,abs(xmin),xmax,abs(ymin),ymax]
+        self.result=[]
+        self.sample_slices=[]
+        padded=None
+        for (xshift,yshift),raw_frame in zip(self.totalshifts, raw_frames):
+            if padded==None:
+                padded=F.pad(raw_frame,pad=padding, value=0)
+            padded=padded.clone()
+            slices=( slice(yshift-ymin,raw_frame.shape[0]+yshift-ymin),    slice(xshift-xmin,raw_frame.shape[1]+xshift-xmin) )
+            self.sample_slices.append(slices)
+            padded[slices]=raw_frame #overwrite the previous frame's data
+            self.result.append(padded.detach().cpu())
+        del raw_frames
+    def sobel_frame(self, frame):
+        from segmentation import make_hsv, sobel3d
+        return sobel3d((make_hsv(frame)[...,2].unsqueeze(-1))).squeeze()
+    def BSP_Search(self, frame, previous,xmin,xmax,ymin,ymax):
+        xdiff=xmax-xmin
+        ydiff=ymax-ymin
+        if(xdiff==0 and ydiff==0):
+            #print('got it, ', xmin, ymin)
+            return xmin,ymin
+        if xdiff<ydiff:
+            meannear=self.get_diff(frame, previous,xmin+xdiff//2,ymin)
+            meanfar=self.get_diff(frame, previous,xmin+xdiff//2,ymax)
+            if ydiff==1:
+                ydiff=0
+            if meannear<meanfar:
+                return self.BSP_Search(frame,previous, xmin,xmax, ymin, ymin+ydiff//2+ydiff%2)
+            else:
+                return self.BSP_Search(frame,previous, xmin,xmax, ymax-ydiff//2-ydiff%2, ymax)
+        else:
+            meannear=self.get_diff(frame, previous,xmin,ymin+ydiff//2)
+            meanfar=self.get_diff(frame, previous,xmax,ymin+ydiff//2)
+            if xdiff==1:
+                xdiff=0
+            if meannear<meanfar:
+                return self.BSP_Search(frame,previous, xmin,xmin+xdiff//2+xdiff%2, ymin, ymax)
+            else:
+                return self.BSP_Search(frame,previous, xmax-xdiff//2-xdiff%2, xmax,ymin, ymax)
+    def get_diff(self, frame, previous, x,y):
+        
+        if x>0:
+            frame=frame[:,:-x]
+            previous=previous[:,x:]
+        elif x<0:
+            frame=frame[:,-x:]
+            previous=previous[:,:x]
+        if y>0:
+            frame=frame[:-y]
+            previous=previous[y:]
+        elif y<0:
+            frame=frame[-y:]
+            previous=previous[:y]
+        leftcol, leftcolp=frame[:,:50], previous[:,:50]
+        rightcol, rightcolp=frame[:,-50:],previous[:,-50:]
+        ldiff=((leftcol-leftcolp)**2).mean()**0.5
+        rdiff=((rightcol-rightcolp)**2).mean()**0.5
+        difference=ldiff+rdiff
+        #difference=(frame-previous).abs().mean()
+        #difference= ((frame-previous)**2).mean()**0.5
+        
+        #print(difference, x,y, frame.shape, previous.shape)
+        return difference
+        
+    def get_slice(self, T):
+        return self.sample_slices[int(T*self.fps)]
+    def make_frame(self,T):
+        return self.result[int(T*self.fps)].numpy()
+        
+        
+        
 class MidasDepthFramer:
     def __init__(self, wrapped):
         self.midas = torch.hub.load("intel-isl/MiDaS", "MiDaS")
@@ -162,13 +279,13 @@ class TemporalMaskEnhancer:
         
 import torch.nn.functional as F
 class RaftMaskMaker:
-    def __init__(self, wrappedClip, target_fps=None, backwards=False):
+    def __init__(self, wrappedClip, target_fps=None, backwards=False, maximize=True):
         
         self.backwards=backwards
         self.target_fps=target_fps
         if not self.target_fps:
             self.target_fps=wrappedClip.fps
-        self.maximize=True
+        self.maximize=maximize
         self.wrapped=wrappedClip
             
         self.initModel()
@@ -190,21 +307,19 @@ class RaftMaskMaker:
     def makeCache(self):
         for i in range(len(self.frames)):
             index=i
-            print(f'making cache for frame {index}')
+            print(f'making raft cache for frame {index}')
             if index==len(self.frames)-1:
                 index=index-1    
             frame1=self.frames[index].cuda()
             frame2=self.frames[index+1].cuda()
-            try:
-                flow_low, flow_up = self.model(frame1, frame2, iters=10, test_mode=True)
-                if self.backwards:
-                    back_low, back_up=self.model(frame2, frame1, iters=10,test_mode=True)
-            except RuntimeError:
-                import pdb
-                pdb.set_trace()
+
+            flow_low, flow_up = self.model(frame1, frame2, iters=10, test_mode=True)
             if self.backwards:
-                self.backwardsCache[i]=back_up[0].permute(1,2,0).abs().detach()
-            self.cachedDiffs[i]=flow_up[0].permute(1,2,0).abs().detach()
+                back_low, back_up=self.model(frame2, frame1, iters=10,test_mode=True)
+
+            if self.backwards:
+                self.backwardsCache[i]=back_up[0].permute(1,2,0).detach()
+            self.cachedDiffs[i]=flow_up[0].permute(1,2,0).detach()
     #help with slow segments
     def findMissing(self, index, gap):
         threshold=3
@@ -226,31 +341,38 @@ class RaftMaskMaker:
         
         if self.backwards:
             if index==len(self.cachedDiffs)-1:
-                flow_up=self.backwardsCache[index-1]
+                flow_up=self.backwardsCache[index-1].abs()
+            elif index==0:
+                flow_up=self.cachedDiffs[index].abs()
+            else:
+                flow_up=self.backwardsCache[index-1].abs()+self.cachedDiffs[index].abs()
+        else:
+            flow_up=self.cachedDiffs[index].abs()
+        
+        
+        imgresult=torchFrame(self.wrapped.get_frame(t))*0
+        modified=self.unpad(flow_up, imgresult)
+        if self.maximize:
+            modified[modified >threshold]=255.0
+        
+        imgresult[:,:,0:2]=modified
+        return imgresult.detach()
+        
+    def raw_data(self, t):
+        index=int(self.target_fps*t)
+        if self.backwards:
+            if index==len(self.cachedDiffs)-1:
+                flow_up=-self.backwardsCache[index-1]
             elif index==0:
                 flow_up=self.cachedDiffs[index]
             else:
-                flow_up=self.backwardsCache[index-1]+self.cachedDiffs[index]
+                flow_up=-self.backwardsCache[index-1]+self.cachedDiffs[index]
         else:
             flow_up=self.cachedDiffs[index]
             
-        
-        modified=flow_up*1
-        if self.maximize:
-            modified[modified >threshold]=255.0
-        imgresult=torchFrame(self.wrapped.get_frame(t))*0
-        imgresult[:,:,0:2]=modified
+        return flow_up.detach()
         
         
-        #missingIndexes=self.findMissing(index,1)
-        #missingIndexes=missingIndexes|self.findMissing(index,2)
-        #missingIndexes=missingIndexes[:,:,0]|missingIndexes[:,:,1]
-        #toModify=imgresult[missingIndexes]
-        #toModify[:,2]=255.0
-        #imgresult[missingIndexes]=toModify
-
-        
-        return imgresult.detach()
     def make_frame(self,t):
         return (self.make_frame_data(t)).int().detach().cpu().numpy()
     def make_mask(self, t):
@@ -266,10 +388,22 @@ class RaftMaskMaker:
     def pad(self, frame):
         left, right=self.getpad(frame.shape[-2])
         top, bottom=self.getpad(frame.shape[-1])
-        return F.pad(frame, [left,right, top,bottom],mode='replicate')
+        return F.pad(frame, [ top,bottom,left,right],mode='replicate')
     def getpad(self, size):
         amount=(8-size%8)%8
         return amount//2, amount//2+amount%2
+    def unpad(self, processed_output, delivery_target):
+        left,right=self.getpad(delivery_target.shape[1])
+        top,bottom=self.getpad(delivery_target.shape[0])
+        if bottom==0:
+            bottom=None
+        else:
+            bottom=-bottom
+        if right==0:
+            right=None
+        else:
+            right=-right
+        return processed_output[top:bottom,left:right]
         
         
 from datetime import datetime
@@ -598,7 +732,7 @@ class CombinedDepthAnalysis:
         return result.detach().cpu().numpy()
         
 class SegmentedFlowMaker:
-    def __init__(self, wrapped,activityThreshold=.2, target_segments=500,large_segment_preference=1, target_fps=8):
+    def __init__(self, wrapped,activityThreshold=.2, target_segments=500,large_segment_preference=1, target_fps=8, stabilizer=None):
         wrapped.fps=target_fps
         self.target_fps=target_fps
         self.wrapped=wrapped
@@ -607,6 +741,7 @@ class SegmentedFlowMaker:
         
         print('making segments')
         self.colors,_,segments,_=flood_video(wrapped,flexibility=5, target_segments=target_segments,color_borders=False, target_fps=target_fps)
+        #self.colors,segments=torch.zeros(360,480,int(target_fps*wrapped.duration),3),torch.zeros(360,480,int(target_fps*wrapped.duration))
         del _
         seg_ids=segments.unique().detach()
         print(f'number of segment ids: {seg_ids}')
@@ -619,8 +754,17 @@ class SegmentedFlowMaker:
         
         count=0
         print('Running raft')
-        self.raft=RaftMaskMaker(wrapped,target_fps, backwards=True)
-        raft_data=torch.stack([(self.raft.make_frame_data(i/target_fps)>1).any(-1) for i in range(int(target_fps*wrapped.duration))],dim=2).cuda()
+        raft_source=wrapped
+        raft_slices=[slice(None,None,None) for i in range(int(target_fps*wrapped.duration))]
+        if stabilizer:
+            raft_source=VideoClip(stabilizer.make_frame, duration=wrapped.duration)
+            raft_slices=stabilizer.sample_slices
+            pass
+        self.raft=RaftMaskMaker(raft_source,target_fps, backwards=True, maximize=not stabilizer)
+        
+        
+        raft_data=torch.stack([(self.raft.make_frame_data(i/target_fps)>1).any(-1)[raft_slices[i]] for i in range(int(target_fps*wrapped.duration))],dim=2).cuda()
+        self.patched_raft_data=raft_data.cpu()
         frame_pixel_counts=raft_data.sum(0).sum(0)
         average_pixels=frame_pixel_counts.float().mean()
         for frame_index, count in enumerate(frame_pixel_counts):
@@ -644,7 +788,7 @@ class SegmentedFlowMaker:
                         count=frame_pixel_counts[new_index]
                 raft_data[...,frame_index]|=raft_data[...,new_index]
                         
-                        
+        
         self.boolMask=raft_data.clone().bool()#be explicit that this a bool
         
         seg_ids=seg_ids.cuda()
@@ -692,7 +836,7 @@ class SegmentedFlowMaker:
             
             reduced=mapped[...,0,0]|mapped[...,0,-1]|mapped[...,-1,0]|mapped[...,-1,-1]
             reduced&=mapped[...,1,1]|mapped[...,1,-2]|mapped[...,-2,1]|mapped[...,-2,-2]
-            #reduced&=mapped[...,5,0]|mapped[...,5,-1]|mapped[...,0,5]|mapped[...,-1,5] #let's also demand one straight direction
+            reduced&=mapped[...,5,0]|mapped[...,5,-1]|mapped[...,0,5]|mapped[...,-1,5] #let's also demand one straight direction
             increased=mapped.sum(-1).sum(-1)>7*7
             
             self.boolMask[4:-4,4:-4,frame_index]&=reduced
@@ -710,6 +854,31 @@ class SegmentedFlowMaker:
         result=mask_frame.new_full(mask_frame.shape,fill_value=0,dtype=torch.float)
         result[mask_frame]=1.0
         return result.detach().cpu().numpy()
+    def make_just_raft(self, T):
+        from segmentation import make_rgb
+        from math import pi
+        T=min(T, self.wrapped.duration-1/self.target_fps)
+        raft_data=self.raft.raw_data(T).cuda()
+        hsvdata=raft_data.new_full(raft_data.shape[:2]+(3,), 0)
+        zerodiv=raft_data[...,1]==0
+        angles=raft_data.new_full(raft_data.shape[:2],0)
+        angles[zerodiv]=torch.sign(raft_data[zerodiv][...,0])
+        angles[~zerodiv]=torch.atan(raft_data[~zerodiv][...,0]/raft_data[~zerodiv][...,1])/(2*pi)
+        angles=angles%1
+        hsvdata[...,0]=angles*255
+        hsvdata[...,1]=255
+        distances=((raft_data[...,0]**2+raft_data[...,1]**2)**0.5)
+        distances.long()//5  #cluster into groups of 5 pixel movement
+        print((distances.long()//5).unique(return_counts=True))
+        #print(distances.median(), angles.median())
+        
+        hsvdata[...,2]=distances/distances.max()*255
+        #pdb.set_trace()
+        return make_rgb(hsvdata).detach().cpu().numpy()
+        #mask_frame=self.patched_raft_data[:,:,int(self.target_fps*T)]
+        #result=mask_frame.new_full(mask_frame.shape,fill_value=0,dtype=torch.float)
+        #result[mask_frame]=1.0
+        #return result.detach().cpu().numpy()
     def make_resnet(self, T):
         T=min(T, self.wrapped.duration-1/self.target_fps)
         frame=self.resnetMattes[:,:,int(self.target_fps*T)]

@@ -4,6 +4,9 @@ from torchmotion import *
 from PIL import Image
 from numpy import array
 
+import sys
+import argparse
+
 from segmentation import flood_video, sobel_video
 
 
@@ -43,6 +46,13 @@ class Frames:
                 row.append(pixel)
             resultStruct.append(row)
         return array(resultStruct)
+        
+def ApplyPanStabilization(filename, fps):
+    sourcevideo=VideoFileClip(filename)
+    maker=StabilizePanMaker(sourcevideo, 120/fps, fps)
+    outname=".".join(filename.split('.')[:-1])
+    result=VideoClip(maker.make_frame,duration=sourcevideo.duration)
+    result.write_videofile(f'stabilized-{outname}.mp4',fps=fps,codec="libx264", bitrate="3000k")
     
 def ApplyResnet(filename):
     
@@ -89,7 +99,8 @@ def ApplyMotion(filename):
 def ApplyDepth(filename):
     sourcevideo=VideoFileClip(filename)
     depthClip=VideoClip(MidasDepthFramer(sourcevideo).make_frame, duration=sourcevideo.duration)
-    depthClip.write_videofile('depth.mp4',fps=sourcevideo.fps, codec="mpeg4")
+    outname=".".join(filename.split('.')[:-1])
+    depthClip.write_videofile(f'depth-{outname}.mp4',fps=sourcevideo.fps, codec="mpeg4")
 def ApplyRaft(filename):
     
     sourcevideo=VideoFileClip(filename)
@@ -99,7 +110,7 @@ def ApplyRaft(filename):
     #sourcevideo.write_gif('source-giffed.gif',fps=8)
     #raftClip.write_videofile('raft.mp4',fps=8, codec="mpeg4")
     outname=".".join(filename.split('.')[:-1])
-    raftMask.write_videofile(f'raftmask-{outname}.mp4',fps=8,codec="mpeg4")
+    raftMask.write_videofile(f'raftmask-{outname}.mp4',fps=8,codec="libx264",bitrate="3000k")
     
 def ApplyCombined(filename):
     sourcevideo=VideoFileClip(filename)
@@ -128,30 +139,54 @@ def ApplySobel(filename):
     output.write_videofile('sobel3d-'+filename,fps=8,codec="mpeg4")
     
     
-def ApplyMotionSegmentation(filename, create_segment_video, target_fps=8):
-    sourcevideo=VideoFileClip(filename)
-    #sourcevideo.duration=12*(1/8)
-    maker=SegmentedFlowMaker(sourcevideo,activityThreshold=0.5,target_segments=550*(int(target_fps*sourcevideo.duration)**0.5), target_fps=target_fps)
-    mask=VideoClip(maker.make_mask,duration=sourcevideo.duration,ismask=True)
-    colors=VideoClip(maker.make_segment_rgb,duration=sourcevideo.duration)
-    #resnet=VideoClip(maker.make_resnet,duration=sourcevideo.duration)
-    outname=".".join(filename.split('.')[:-1])
-    if create_segment_video:
-        colors.write_videofile(f'motion-segment-segments-{outname}.mp4',fps=target_fps,codec="mpeg4")
-        mask.write_videofile(f'motion-segment-mask-{outname}.mp4',fps=target_fps,codec="mpeg4")
-        #resnet.write_videofile(f'motion-segment-resnet-{outname}.mp4',fps=8,codec="mpeg4")
-    masked=sourcevideo.set_mask(mask)
-    composite=CompositeVideoClip([ColorClip(sourcevideo.size,(0,0,0),duration=sourcevideo.duration), masked])
-    composite.write_videofile(f'motion_segment-extracted-{outname}.mp4',fps=target_fps,codec="mpeg4")
+def ApplyMotionSegmentation(filename, create_segment_video, target_fps=8, stabilize=False):
+    with torch.no_grad():
+        sourcevideo=VideoFileClip(filename)
+        segmented=sourcevideo
+        stabilizer=None
+        if stabilize:
+            print('stabilizing video')
+            stabilizer=StabilizePanMaker(sourcevideo, 60, target_fps)
+            segmented=VideoClip(stabilizer.make_frame, duration=sourcevideo.duration)
+            print('video stabilized')
+        #sourcevideo.duration=12*(1/8)
+        #frame rate shouldn't matter for number of segments, rate of motion might increase it, but I'm not sampling that.  Screw you.
+        maker=SegmentedFlowMaker(sourcevideo,activityThreshold=0.5,target_segments=550*(int(8*sourcevideo.duration)**0.5), target_fps=target_fps, stabilizer=stabilizer)
+        mask=VideoClip(maker.make_mask,duration=sourcevideo.duration,ismask=True)
+        just_raft=VideoClip(maker.make_just_raft,duration=sourcevideo.duration,ismask=False)
+        colors=VideoClip(maker.make_segment_rgb,duration=sourcevideo.duration)
+        #resnet=VideoClip(maker.make_resnet,duration=sourcevideo.duration)
+        outname=".".join(filename.split('.')[:-1])
+        if create_segment_video:
+            colors.write_videofile(f'motion-segment-segments-{outname}.mp4',fps=target_fps,codec="mpeg4")
+            mask.write_videofile(f'motion-segment-mask-{outname}.mp4',fps=target_fps,codec="mpeg4")
+            just_raft.write_videofile(f'motion-segment-raft-{outname}.mp4',fps=target_fps,codec="mpeg4")
+            #resnet.write_videofile(f'motion-segment-resnet-{outname}.mp4',fps=8,codec="mpeg4")
+        masked=sourcevideo.set_mask(mask)
+        composite=CompositeVideoClip([ColorClip(sourcevideo.size,(0,0,0),duration=sourcevideo.duration), masked])
+        composite.write_videofile(f'motion_segment-extracted-{outname}.mp4',fps=target_fps,codec="libx264", bitrate="3000k")
     
     
     
 def main():
-    import sys
-    if sys.argv and len(sys.argv)==2:
+    parser=argparse.ArgumentParser(description="Make a time-inclusive segmented version of a RAFT flow")
+    parser.add_argument("filename", type=str, help="the file to segment")
+    parser.add_argument("--fps", type=int, default=8, help="analyze at this frame rate")
+    parser.add_argument("--sidefiles", action="store_false", help="Include secondary files like mask and segment map")
+    parser.add_argument("--nomotionsegmentation", action="store_false", help="Do the main analysis, set to False if you only want to look at other artifacts")
+    parser.add_argument("--depth", action="store_true", help="Produce a depth map, may be used for further filtering later")
+    parser.add_argument("--stabilize", action="store_true", help="Stabilize the video")
+    args=parser.parse_args()
+    #if sys.argv and len(sys.argv)==2:
         #ApplyRaft(sys.argv[1])
         #ApplySobel(sys.argv[1])
-        ApplyMotionSegmentation(sys.argv[1],True, 24)
+    if args.stabilize:
+        ApplyPanStabilization(args.filename,args.fps)
+    if args.depth:
+        ApplyDepth(args.filename)
+    if args.nomotionsegmentation:
+        ApplyMotionSegmentation(args.filename,args.sidefiles, args.fps, args.stabilize)
+    
     else:
         print ("please enter filename")
     
